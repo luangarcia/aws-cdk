@@ -1,104 +1,81 @@
-import { Stack, StackProps, Duration, aws_events, aws_events_targets, RemovalPolicy} from 'aws-cdk-lib';
+import { Stack, StackProps, Duration, aws_events, aws_events_targets, RemovalPolicy } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
+import { DynamoEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
-import * as sqs from 'aws-cdk-lib/aws-sqs';
-import * as lambdaEventSource from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as cdk from 'aws-cdk-lib';
 
-// import * as events from "@aws-cdk/aws-events";
-// import * as targets from "@aws-cdk/aws-events-targets";
 
 
 export class EmailServiceStack extends Stack {
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props);
-    // create the SQS queue
-    const orderQueue = new sqs.Queue(this, 'OrderProcessingQueue', {
-      visibilityTimeout: Duration.seconds(45),
-      queueName: 'order-processing-queue',
-    });
+    
+    // provision the DynamoDB order table
+    const DynamoUserTable = new dynamodb.Table(this, 'UsersTable', {
+      partitionKey: { name: 'userId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      encryption: dynamodb.TableEncryption.DEFAULT,
+      pointInTimeRecovery: false,
+      stream: dynamodb.StreamViewType.NEW_IMAGE, // Habilita o stream na tabela
+      removalPolicy: RemovalPolicy.DESTROY //process.env.environment === 'staging' ? RemovalPolicy.DESTROY : RemovalPolicy.RETAIN
 
-    // create an sqs event source
-    const lambdaSqsEventSource = new lambdaEventSource.SqsEventSource(orderQueue, {
-      batchSize: 10,
-      enabled: true,
     });
-
+    // create the lambda responsible for welcomeUserFunction orders
+    const welcomeUserFunction = new lambda.Function(this, 'welcomeUserFunction', {
+      code: lambda.Code.fromAsset('lambdas/notifications'),
+      handler: 'lambda.welcomeUser',
+      runtime: lambda.Runtime.NODEJS_16_X,
+      memorySize: 256,
+      timeout: cdk.Duration.seconds(10),
+      environment: {
+        USER_TABLE_NAME: DynamoUserTable.tableName,
+        CDK_DEFAULT_REGION: process.env.CDK_DEFAULT_ACCOUNT!
+      }
+    });
     // create the lambda responsible for processing orders
-    const processOrderFunction = new lambda.Function(this, 'ProcessOrderLambda', {
-      code: lambda.Code.fromAsset('lambda'),
-      handler: 'lambdas.processOrder',
+    const createUserFunction = new lambda.Function(this, 'createUserFunction', {
+      code: lambda.Code.fromAsset('lambdas/notifications'),
+      handler: 'lambda.createUserFunction',
       runtime: lambda.Runtime.NODEJS_16_X,
+      memorySize: 256,
+      timeout: cdk.Duration.seconds(10),
+      environment: {
+        USER_TABLE_NAME: DynamoUserTable.tableName,
+        CDK_DEFAULT_REGION: process.env.CDK_DEFAULT_ACCOUNT!
+      }
     });
 
 
-     // create the lambda responsible for happy birthday orders
-     const processBirthdayFunction = new lambda.Function(this, 'ProcessBirthDayLambda', {
-      code: lambda.Code.fromAsset('lambda'),
-      handler: 'lambdas.processBirthday',
-      runtime: lambda.Runtime.NODEJS_16_X,
-    });
-
-    //create crontab
-    const eventRule = new aws_events.Rule(this, "fiveMinuteRule", {
-      schedule: aws_events.Schedule.cron({ minute: "*" }),
-    });
-
-    //relation lambda with event cron
-    eventRule.addTarget(
-      new aws_events_targets.LambdaFunction(processBirthdayFunction)
-    );
-
-    aws_events_targets.addLambdaPermission(eventRule, processBirthdayFunction);
-
-    // attach the event source to the orderProcessing lambda, so that Lambda can poll the queue and invoke the OrderProcessing Lambda
-    processOrderFunction.addEventSource(lambdaSqsEventSource);
     // grant the order process lambda permission to invoke SES
-    processOrderFunction.addToRolePolicy(new iam.PolicyStatement({
+    welcomeUserFunction.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['ses:SendRawEmail', 'ses:SendTemplatedEmail', 'ses:SendEmail'],
       resources: ['*'],
       sid: 'SendEmailPolicySid',
     }));
 
-    // provision the DynamoDB order table
-    const orderTable = new dynamodb.Table(this, 'OrderTable', {
-      partitionKey: { name: 'orderId', type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      encryption: dynamodb.TableEncryption.DEFAULT,
-      pointInTimeRecovery: false,
-      removalPolicy: process.env.environment === 'staging' ? RemovalPolicy.DESTROY : RemovalPolicy.RETAIN
+    welcomeUserFunction.addEventSource(new DynamoEventSource(DynamoUserTable, {
+      startingPosition: lambda.StartingPosition.LATEST,
+      batchSize: 1
+    }));
 
-    });
-
-    // creates the Lambda function to create the order.
-    const createOrderFunction = new lambda.Function(this, 'CreateOrderLambda', {
-      code: lambda.Code.fromAsset('lambda'),
-      handler: 'lambdas.createOrder',
-      runtime: lambda.Runtime.NODEJS_16_X,
-      memorySize: 256,
-      timeout: Duration.seconds(10),
-      environment: {
-        ORDER_TABLE_NAME: orderTable.tableName,
-        ORDER_PROCESSING_QUEUE_URL: orderQueue.queueUrl,
-        ADMIN_EMAIL: 'luan.garcia@gmail.com',
-      }
-    });
-    orderTable.grantWriteData(createOrderFunction); // allow the createOrder lambda function to write to the order table
-    orderQueue.grantSendMessages(createOrderFunction); // allow the createOrder lambda function to send messages to the order processing queue
-
+    DynamoUserTable.grantReadWriteData(createUserFunction); // allow the createOrder lambda function to write to the order table
+    DynamoUserTable.grantReadWriteData(welcomeUserFunction); // allow the createOrder lambda function to write to the order table
     // creates an API Gateway REST API
     const restApi = new apigateway.RestApi(this, 'EmailServiceApi', {
       restApiName: 'EmailService',
     });
 
-    // create an api gateway resource '/orders/new'
-    const newOrders = restApi.root.addResource('orders').addResource('new');
+    // create an api gateway resource '/user/create'
+    const createUser = restApi.root.addResource('user').addResource('create');
     // creating a POST method for the new order resource that integrates with the createOrder Lambda function
-    newOrders.addMethod('POST', new apigateway.LambdaIntegration(createOrderFunction), {
+    createUser.addMethod('POST', new apigateway.LambdaIntegration(createUserFunction), {
       authorizationType: apigateway.AuthorizationType.NONE,
     });
+
+   
   }
 }

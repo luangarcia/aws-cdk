@@ -1,0 +1,15 @@
+{
+  "name": "notifications",
+  "version": "1.0.0",
+  "description": "",
+  "main": "welcomeUser.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "types": "./welcomeUser.d.ts",
+  "devDependencies": {
+    "@types/aws-sdk": "^2.7.0"
+  }
+}

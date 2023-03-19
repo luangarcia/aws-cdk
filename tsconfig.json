@@ -5,6 +5,7 @@
     "lib": [
       "es2018"
     ],
+    "skipLibCheck": true,
     "declaration": true,
     "strict": true,
     "noImplicitAny": true,
@@ -24,6 +25,8 @@
     ]
   },
   "exclude": [
+    "./node_modules",
+    "./node_modules/*",
     "node_modules",
     "cdk.out"
   ]
