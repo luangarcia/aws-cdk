@@ -1,5 +1,7 @@
 # Email Service Application
 
+teste
+
 Creates a functioning order processing application using API Gateway, DynamoDB, SES and SQS to demonstrate an asyncronous email sending architecture.
 
 The `cdk.json` file tells the CDK Toolkit how to execute your app.
